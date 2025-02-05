@@ -40,8 +40,17 @@ export default function LinkShortener() {
     const savedHistory = localStorage.getItem("urlHistory");
     if (savedHistory) {
       setHistory(JSON.parse(savedHistory));
-      setIsHistoryExpanded(true);
+      // Default to hidden on mobile, expanded on desktop
+      setIsHistoryExpanded(window.innerWidth >= 768);
     }
+
+    // Update isHistoryExpanded when window is resized
+    const handleResize = () => {
+      setIsHistoryExpanded(window.innerWidth >= 768);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   const handleCopy = useCallback(
@@ -146,8 +155,8 @@ export default function LinkShortener() {
   };
 
   return (
-    <div className="relative flex gap-4">
-      <div className="w-full max-w-xl">
+    <div className="relative flex flex-col gap-4 lg:flex-row">
+      <div className="w-full lg:max-w-xl">
         <div className="rounded-lg border bg-card p-4 shadow-sm">
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="flex items-center rounded-md border-2 border-input bg-background focus-within:border-primary">
@@ -174,13 +183,21 @@ export default function LinkShortener() {
 
       <div
         className={cn(
-          "fixed right-0 top-0 h-full w-80 transform overflow-hidden border-l bg-background transition-transform duration-300",
-          isHistoryExpanded ? "translate-x-0" : "translate-x-[calc(100%-2rem)]",
+          "w-full rounded-lg border bg-background lg:w-80 lg:rounded-none lg:border-l lg:border-t-0",
+          "mt-4 lg:mt-0",
+          "transform transition-transform duration-300 lg:fixed lg:right-0 lg:top-0 lg:h-full",
+          "lg:overflow-hidden",
+          isHistoryExpanded
+            ? "lg:translate-x-0"
+            : "lg:translate-x-[calc(100%-2rem)]",
         )}
       >
         <button
           onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}
-          className="absolute -left-6 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 bg-background hover:bg-accent/50"
+          className={cn(
+            "absolute -left-6 hidden h-6 w-6 items-center justify-center rounded-l-md border border-r-0 bg-background hover:bg-accent/50 lg:flex",
+            "top-1/2 -translate-y-1/2",
+          )}
         >
           <ChevronRight
             className={cn(
@@ -211,7 +228,7 @@ export default function LinkShortener() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto">
+          <div className="max-h-[50vh] flex-1 overflow-y-auto lg:max-h-full">
             <div className="divide-y divide-border">
               {history.map((item) => (
                 <div
