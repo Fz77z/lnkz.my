@@ -26,6 +26,11 @@ type HistoryItem = {
   createdAt: number;
 };
 
+// Pre-generate a short code
+function generateShortCode() {
+  return Math.random().toString(36).substring(2, 8);
+}
+
 export default function LinkShortener() {
   const [url, setUrl] = useState("");
   const [shortUrl, setShortUrl] = useState("");
@@ -35,6 +40,7 @@ export default function LinkShortener() {
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(true);
   const [copied, setCopied] = useState(false);
   const [isErrorDialog, setIsErrorDialog] = useState(false);
+  const [preparedCode, setPreparedCode] = useState<string>("");
 
   useEffect(() => {
     const savedHistory = localStorage.getItem("urlHistory");
@@ -52,6 +58,27 @@ export default function LinkShortener() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // Pre-validate URL and generate short code on hover
+  const handleButtonHover = useCallback(() => {
+    try {
+      // Basic URL validation
+      const urlObj = new URL(url);
+      if (urlObj.hostname === "lnkz.my") return;
+
+      // Pre-generate the code if URL seems valid
+      if (!preparedCode) {
+        setPreparedCode(generateShortCode());
+      }
+    } catch {
+      // Invalid URL, ignore
+    }
+  }, [url, preparedCode]);
+
+  // Reset prepared code when URL changes
+  useEffect(() => {
+    setPreparedCode("");
+  }, [url]);
 
   const handleCopy = useCallback(
     (textToCopy: string) => {
@@ -95,7 +122,7 @@ export default function LinkShortener() {
     setShortUrl("");
 
     try {
-      // Check if trying to shorten our own shortened URL - more robust check
+      // Check if trying to shorten our own shortened URL
       if (url.includes("lnkz.my") || url.startsWith("https://lnkz.my")) {
         setIsErrorDialog(true);
         setShowDialog(true);
@@ -106,7 +133,11 @@ export default function LinkShortener() {
       const response = await fetch("/api/shorten", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({
+          url,
+          // Send pre-generated code if available
+          shortCode: preparedCode || undefined,
+        }),
       });
 
       if (!response.ok) {
@@ -114,7 +145,6 @@ export default function LinkShortener() {
       }
 
       const data = await response.json();
-      // Ensure we don't double prefix the URL
       const fullShortUrl = data.shortUrl.startsWith("https://lnkz.my/")
         ? data.shortUrl
         : `https://lnkz.my/${data.shortUrl}`;
@@ -123,6 +153,7 @@ export default function LinkShortener() {
       setIsErrorDialog(false);
       setShowDialog(true);
       setUrl(""); // Clear input after successful submission
+      setPreparedCode(""); // Reset prepared code
     } catch {
       setShowDialog(true);
       setIsErrorDialog(true);
@@ -173,6 +204,8 @@ export default function LinkShortener() {
             <button
               type="submit"
               disabled={isLoading}
+              onMouseEnter={handleButtonHover}
+              onFocus={handleButtonHover}
               className="w-full rounded-md bg-primary py-2 text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isLoading ? "Shortening..." : "Shorten URL"}
