@@ -4,29 +4,12 @@ import { db } from "@/db/index";
 import { linksTable } from "@/db/schema";
 import { z } from "zod";
 
-// Blocked domains that we don't want to allow shortening
-const BLOCKED_DOMAINS = [
-  "evil.com",
-  "malware.com",
-  "phishing.com",
-  "login",
-  "signin",
-  "account",
-  "security",
-  "verify",
-  "wallet",
-  "bank",
-  // Add more as needed
-];
-
 // Blocked URL patterns (case insensitive)
 const BLOCKED_PATTERNS = [
-  /phish/i,
-  /malware/i,
-  /hack/i,
-  /scam/i,
-  /crypto-?wallet/i,
-  /validate-?account/i,
+  /^javascript:/i, // JavaScript protocol
+  /^data:/i, // Data protocol
+  /^vbscript:/i, // VBScript protocol
+  /^file:/i, // File protocol
 ];
 
 // URL validation schema with additional security checks
@@ -34,56 +17,26 @@ const shortenSchema = z.object({
   url: z
     .string()
     .url("Invalid URL format")
-    .refine((url) => {
-      try {
-        const urlObj = new URL(url);
-        // Check for blocked domains
-        const hostname = urlObj.hostname.toLowerCase();
-        return !BLOCKED_DOMAINS.some((domain) =>
-          hostname.includes(domain.toLowerCase()),
-        );
-      } catch {
-        return false;
-      }
-    }, "This domain is not allowed")
-    .refine((url) => {
-      // Only allow http and https protocols
-      return url.startsWith("http://") || url.startsWith("https://");
-    }, "Only HTTP and HTTPS protocols are allowed")
-    .refine((url) => {
-      // Maximum URL length check
-      return url.length <= 2048;
-    }, "URL is too long")
-    .refine((url) => {
-      // Check for suspicious patterns
-      return !BLOCKED_PATTERNS.some((pattern) => pattern.test(url));
-    }, "URL contains suspicious patterns")
-    .refine((url) => {
-      // Prevent localhost and private IP addresses
-      try {
-        const urlObj = new URL(url);
-        const hostname = urlObj.hostname.toLowerCase();
-        return !(
-          hostname === "localhost" ||
-          hostname.startsWith("127.") ||
-          hostname.startsWith("192.168.") ||
-          hostname.startsWith("10.") ||
-          hostname.startsWith("169.254.") ||
-          hostname.endsWith(".local")
-        );
-      } catch {
-        return false;
-      }
-    }, "Local and private IP addresses are not allowed")
-    .transform((url) => {
-      // Sanitize: remove any whitespace and common XSS patterns
-      return url
-        .trim()
-        .replace(/[<>]/g, "") // Remove < and > to prevent HTML injection
-        .replace(/javascript:/gi, "") // Remove javascript: protocol
-        .replace(/data:/gi, "") // Remove data: protocol
-        .replace(/vbscript:/gi, ""); // Remove vbscript: protocol
-    }),
+    .refine(
+      (url) => {
+        try {
+          const urlObj = new URL(url);
+          // Only block if the input URL is from our domain
+          return urlObj.hostname !== "lnkz.my";
+        } catch {
+          return false;
+        }
+      },
+      { message: "Cannot shorten an already shortened URL" },
+    )
+    .refine((url) => url.startsWith("http://") || url.startsWith("https://"), {
+      message: "Only HTTP and HTTPS protocols are allowed",
+    })
+    .refine((url) => url.length <= 2048, { message: "URL is too long" })
+    .refine((url) => !BLOCKED_PATTERNS.some((pattern) => pattern.test(url)), {
+      message: "URL contains suspicious patterns",
+    })
+    .transform((url) => url.trim()),
 });
 
 // Simple in-memory rate limiter
@@ -191,7 +144,7 @@ export async function POST(request: Request) {
         count: sql<number>`count(*)`,
       })
       .from(linksTable)
-      .where(sql`ip_address = ${ipAddress}`);
+      .where(sql`ipAddress = ${ipAddress}`);
 
     const urlCount = Number(result[0]?.count ?? 0);
 

@@ -31,7 +31,7 @@ export default function RootLayout({
       >
         <div className="fixed left-1/2 top-4 z-50 flex -translate-x-1/2 items-center gap-4">
           <a
-            href="https://github.com/kanerkt/lnkz.my"
+            href="https://github.com/Fz77z/lnkz.my"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 rounded-full border bg-background/50 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur-sm transition-all hover:bg-accent hover:text-accent-foreground"
