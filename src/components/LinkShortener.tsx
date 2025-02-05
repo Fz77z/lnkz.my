@@ -28,7 +28,7 @@ export default function LinkShortener() {
 
       const data = await response.json();
       setShortUrl(data.shortUrl);
-    } catch (err) {
+    } catch {
       setError("An error occurred. Please try again.");
     } finally {
       setIsLoading(false);
