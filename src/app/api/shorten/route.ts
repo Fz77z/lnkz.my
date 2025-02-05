@@ -18,10 +18,11 @@ export async function POST(request: Request) {
       request.headers.get("x-real-ip") ||
       "127.0.0.1";
 
-    const maxRetries = 5;
-    let shortCode;
-    for (let i = 0; i < maxRetries; i++) {
-      shortCode = Math.random().toString(36).substr(2, 6);
+    const shortCode = Math.random().toString(36).substr(2, 6);
+    const shortUrl = `https://lnkz.my/${shortCode}`;
+
+    // Insert into the database in the background without blocking the response
+    void (async () => {
       try {
         await db.insert(linksTable).values({
           slug: shortCode,
@@ -30,27 +31,10 @@ export async function POST(request: Request) {
           clicks: 0,
           ipAddress,
         });
-        // If insertion succeeds, break out of the loop
-        break;
       } catch (err) {
-        if (
-          err instanceof Error &&
-          err.message.includes("UNIQUE constraint failed")
-        ) {
-          if (i === maxRetries - 1) {
-            throw new Error(
-              "Failed to generate unique slug after multiple attempts",
-            );
-          }
-          // Retry with a new slug
-          continue;
-        } else {
-          throw err;
-        }
+        console.error("Background DB insertion error:", err);
       }
-    }
-
-    const shortUrl = `https://lnkz.my/${shortCode}`;
+    })();
 
     return NextResponse.json({ shortUrl });
   } catch (error) {
