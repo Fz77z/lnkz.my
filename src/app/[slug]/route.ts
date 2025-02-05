@@ -5,16 +5,16 @@ import { eq } from "drizzle-orm";
 
 export async function GET(
   request: NextRequest,
-  context: { params: { slug: string | string[] } },
-) {
-  const { params } = context;
-  const slugValue = Array.isArray(params.slug) ? params.slug[0] : params.slug;
+  context: unknown,
+): Promise<NextResponse> {
+  const { params } = context as { params: { slug: string | string[] } };
+  const slug = Array.isArray(params.slug) ? params.slug[0] : params.slug;
 
   // Query the database for the matching link
   const [link] = await db
     .select()
     .from(linksTable)
-    .where(eq(linksTable.slug, slugValue));
+    .where(eq(linksTable.slug, slug));
 
   if (!link) {
     return new NextResponse("Not Found", { status: 404 });
@@ -24,7 +24,7 @@ export async function GET(
   await db
     .update(linksTable)
     .set({ clicks: link.clicks + 1 })
-    .where(eq(linksTable.slug, slugValue));
+    .where(eq(linksTable.slug, slug));
 
   return NextResponse.redirect(link.url);
 }
