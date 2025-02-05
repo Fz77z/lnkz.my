@@ -1,42 +1,254 @@
+import { sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db/index";
 import { linksTable } from "@/db/schema";
 import { z } from "zod";
 
+// Blocked domains that we don't want to allow shortening
+const BLOCKED_DOMAINS = [
+  "evil.com",
+  "malware.com",
+  "phishing.com",
+  "login",
+  "signin",
+  "account",
+  "security",
+  "verify",
+  "wallet",
+  "bank",
+  // Add more as needed
+];
+
+// Blocked URL patterns (case insensitive)
+const BLOCKED_PATTERNS = [
+  /phish/i,
+  /malware/i,
+  /hack/i,
+  /scam/i,
+  /crypto-?wallet/i,
+  /validate-?account/i,
+];
+
+// URL validation schema with additional security checks
 const shortenSchema = z.object({
-  url: z.string().url("Invalid URL format"),
+  url: z
+    .string()
+    .url("Invalid URL format")
+    .refine((url) => {
+      try {
+        const urlObj = new URL(url);
+        // Check for blocked domains
+        const hostname = urlObj.hostname.toLowerCase();
+        return !BLOCKED_DOMAINS.some((domain) =>
+          hostname.includes(domain.toLowerCase()),
+        );
+      } catch {
+        return false;
+      }
+    }, "This domain is not allowed")
+    .refine((url) => {
+      // Only allow http and https protocols
+      return url.startsWith("http://") || url.startsWith("https://");
+    }, "Only HTTP and HTTPS protocols are allowed")
+    .refine((url) => {
+      // Maximum URL length check
+      return url.length <= 2048;
+    }, "URL is too long")
+    .refine((url) => {
+      // Check for suspicious patterns
+      return !BLOCKED_PATTERNS.some((pattern) => pattern.test(url));
+    }, "URL contains suspicious patterns")
+    .refine((url) => {
+      // Prevent localhost and private IP addresses
+      try {
+        const urlObj = new URL(url);
+        const hostname = urlObj.hostname.toLowerCase();
+        return !(
+          hostname === "localhost" ||
+          hostname.startsWith("127.") ||
+          hostname.startsWith("192.168.") ||
+          hostname.startsWith("10.") ||
+          hostname.startsWith("169.254.") ||
+          hostname.endsWith(".local")
+        );
+      } catch {
+        return false;
+      }
+    }, "Local and private IP addresses are not allowed")
+    .transform((url) => {
+      // Sanitize: remove any whitespace and common XSS patterns
+      return url
+        .trim()
+        .replace(/[<>]/g, "") // Remove < and > to prevent HTML injection
+        .replace(/javascript:/gi, "") // Remove javascript: protocol
+        .replace(/data:/gi, "") // Remove data: protocol
+        .replace(/vbscript:/gi, ""); // Remove vbscript: protocol
+    }),
 });
+
+// Simple in-memory rate limiter
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 5; // 5 requests per minute
+const MAX_URLS_PER_IP = 100; // Maximum number of URLs per IP
+
+interface RateLimit {
+  timestamp: number;
+  count: number;
+}
+
+const rateLimits = new Map<string, RateLimit>();
+
+// Clean up old rate limit entries every 5 minutes
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [ip, limit] of rateLimits.entries()) {
+      if (now - limit.timestamp > RATE_LIMIT_WINDOW) {
+        rateLimits.delete(ip);
+      }
+    }
+  },
+  5 * 60 * 1000,
+);
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const limit = rateLimits.get(ip);
+
+  if (!limit) {
+    rateLimits.set(ip, { timestamp: now, count: 1 });
+    return false;
+  }
+
+  if (now - limit.timestamp > RATE_LIMIT_WINDOW) {
+    rateLimits.set(ip, { timestamp: now, count: 1 });
+    return false;
+  }
+
+  if (limit.count >= MAX_REQUESTS_PER_WINDOW) {
+    return true;
+  }
+
+  limit.count++;
+  return false;
+}
 
 export async function POST(request: Request) {
   try {
-    // Validate the incoming request using zod
-    const { url } = shortenSchema.parse(await request.json());
+    // Validate request method
+    if (request.method !== "POST") {
+      return NextResponse.json(
+        { error: "Method not allowed" },
+        { status: 405 },
+      );
+    }
 
-    const createdAt = new Date().toISOString();
-    const ipAddress =
-      request.headers.get("x-forwarded-for") ||
+    // Validate content type
+    const contentType = request.headers.get("content-type");
+    if (!contentType?.includes("application/json")) {
+      return NextResponse.json(
+        { error: "Content-Type must be application/json" },
+        { status: 415 },
+      );
+    }
+
+    // Check request size
+    const contentLength = request.headers.get("content-length");
+    if (contentLength && parseInt(contentLength) > 5000) {
+      return NextResponse.json({ error: "Request too large" }, { status: 413 });
+    }
+
+    // Get and validate IP address with additional checks
+    let ipAddress =
+      request.headers.get("x-forwarded-for")?.split(",")[0] || // Get first IP if multiple
       request.headers.get("x-real-ip") ||
       "127.0.0.1";
 
-    const shortCode = Math.random().toString(36).substr(2, 6);
+    // Basic IP validation
+    if (!ipAddress.match(/^[\d\.a-f\:]+$/i)) {
+      ipAddress = "0.0.0.0"; // Invalid IP, use placeholder
+    }
+
+    // Check rate limit
+    if (isRateLimited(ipAddress)) {
+      return NextResponse.json(
+        {
+          error: "Rate limit exceeded. Please try again later.",
+          retryAfter: RATE_LIMIT_WINDOW / 1000,
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": (RATE_LIMIT_WINDOW / 1000).toString(),
+          },
+        },
+      );
+    }
+
+    // Check total URLs created by this IP using SQL count
+    const result = await db
+      .select({
+        count: sql<number>`count(*)`,
+      })
+      .from(linksTable)
+      .where(sql`ip_address = ${ipAddress}`);
+
+    const urlCount = Number(result[0]?.count ?? 0);
+
+    if (urlCount >= MAX_URLS_PER_IP) {
+      return NextResponse.json(
+        { error: "Maximum number of URLs created for this IP address" },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate the URL
+    const { url } = shortenSchema.parse(await request.json());
+
+    const createdAt = new Date().toISOString();
+
+    // Generate a secure random short code
+    const shortCode = Array.from(crypto.getRandomValues(new Uint8Array(4)))
+      .map((b) => (b % 36).toString(36)) // Ensure we only get chars 0-9 and a-z
+      .join("")
+      .slice(0, 6);
+
     const shortUrl = `https://lnkz.my/${shortCode}`;
 
-    // Insert into the database in the background without blocking the response
-    void (async () => {
-      try {
-        await db.insert(linksTable).values({
-          slug: shortCode,
-          url,
-          createdAt,
-          clicks: 0,
-          ipAddress,
-        });
-      } catch (err) {
-        console.error("Background DB insertion error:", err);
-      }
-    })();
+    // Insert into the database
+    try {
+      await db.insert(linksTable).values({
+        slug: shortCode,
+        url,
+        createdAt,
+        clicks: 0,
+        ipAddress,
+      });
+    } catch (err) {
+      console.error("Database insertion error:", err);
+      return NextResponse.json(
+        { error: "Failed to create short URL" },
+        { status: 500 },
+      );
+    }
 
-    return NextResponse.json({ shortUrl });
+    return NextResponse.json(
+      { shortUrl },
+      {
+        headers: {
+          "Content-Security-Policy": "default-src 'self'",
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "DENY",
+          "Referrer-Policy": "no-referrer",
+          "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+          "X-XSS-Protection": "1; mode=block",
+          "X-Permitted-Cross-Domain-Policies": "none",
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "Cross-Origin-Opener-Policy": "same-origin",
+          "Cross-Origin-Embedder-Policy": "require-corp",
+        },
+      },
+    );
   } catch (error) {
     console.error("Error shortening URL:", error);
     return NextResponse.json(
